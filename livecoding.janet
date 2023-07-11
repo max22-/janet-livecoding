@@ -20,6 +20,8 @@
   (ev/sleep dur)
   (rtmidi/note-off port channel note velocity))
 
+# Synchronization ######################################################
+
 (def sync-channel (ev/thread-chan 10))
 
 (defn synchronizer
@@ -34,6 +36,8 @@
 
 (ev/thread (fiber/new synchronizer :t) nil :n)
 
+# Loop management ###############################################
+
 (def loop-manager-chan (ev/thread-chan 10))
 
 (defn loop-manager
@@ -41,10 +45,14 @@
   (def loops @{})
   (forever
    (let [[cmd arg] (ev/take loop-manager-chan)]
-     (print "loop-manager received something")
-     (print (string "cmd=" cmd ", arg=" arg))
+     (printf "loop-manager received cmd=%v, arg=%v" cmd arg)
      (case cmd
-       :register (put loops (get arg :name) (get arg :data))
+       :register (let [name (get arg :name)
+		       data (get arg :data)
+		      prev-channel (get-in loops [name :channel])]
+		   (when (not (nil? (get loops name)))
+		     (ev/give prev-channel :stop))
+		     (put loops name data))
        :show (pp loops)
        :stop (let [loop-data (get loops arg)]
 	       (when (not (nil? loop-data))
@@ -52,6 +60,10 @@
 		 (put loops arg nil)))))))
        
 (ev/thread (fiber/new loop-manager :t) nil :n)
+
+(defn stop
+  [loop-name]
+  (ev/give loop-manager-chan [:stop loop-name]))
 
 (defn show-loops
   []
@@ -61,23 +73,26 @@
   [data]
   (ev/give loop-manager-chan [:register data]))
 
-(defn loop1
-  []
-  (let [ loop-name :loop1
-	  control-chan (ev/thread-chan 10)]
-    (register-loop {:name loop-name :data {:channel control-chan}})
-    (forever
-     (print "loop")
-     (repeat 10
-	     (play (+ 69 (choose major)) 1)
-	     (ev/sleep 1))
-     (when (> (ev/count control-chan) 0)
-       (let [msg (ev/take control-chan)]
-	 (when (= msg :stop)
-	   (print (string "Stopping loop " loop-name))
-	   (break)))))))
+# Loop creation macro ###################################################
 
-(ev/thread (fiber/new loop1 :t) nil :n)
-(ev/give loop-manager-chan [:stop :loop1])
+(defmacro def-loop
+  "Create a new live loop"
+  [name body]
+  ~(ev/spawn-thread
+    (let [control-chan (ev/thread-chan 10)]
+      (register-loop {:name ,name :data {:channel control-chan}})
+      (forever
+       ,body
+       (when (> ( ev/count control-chan) 0)
+	 (let [msg (ev/take control-chan)]
+	   (when (= msg :stop)
+	     (printf "Stopping loop %v" ,name)
+	     (break))))))))
 
-(show-loops)
+# Launch a netrepl instance #############################################
+
+(import spork/netrepl :as netrepl)
+(netrepl/server "127.0.0.1" 9365 (curenv))
+
+
+
