@@ -44,20 +44,18 @@
   []
   (def loops @{})
   (forever
-   (let [[cmd arg] (ev/take loop-manager-chan)]
-     (printf "loop-manager received cmd=%v, arg=%v" cmd arg)
+   (let [[cmd loop-name arg] (ev/take loop-manager-chan)]
+     (printf "loop-manager received cmd=%v, loop-name=%v, arg=%v" cmd loop-name arg)
      (case cmd
-       :register (let [name (get arg :name)
-		       data (get arg :data)
-		      prev-channel (get-in loops [name :channel])]
-		   (when (not (nil? (get loops name)))
+       :register (let [prev-channel (get-in loops [loop-name :channel])]
+		   (when (not (nil? prev-channel))
 		     (ev/give prev-channel :stop))
-		     (put loops name data))
+		     (put loops loop-name arg))
        :show (pp loops)
-       :stop (let [loop-data (get loops arg)]
-	       (when (not (nil? loop-data))
-		 (ev/give (get loop-data :channel) :stop)
-		 (put loops arg nil)))))))
+       :stop (let [loop-channel (get-in loops [loop-name :channel])]
+	       (when (not (nil? loop-channel))
+		 (ev/give loop-channel :stop)
+		 (put loops loop-name nil)))))))
        
 (ev/thread (fiber/new loop-manager :t) nil :n)
 
@@ -70,8 +68,8 @@
   (ev/give loop-manager-chan [:show]))
 
 (defn register-loop
-  [data]
-  (ev/give loop-manager-chan [:register data]))
+  [name data]
+  (ev/give loop-manager-chan [:register name data]))
 
 # Loop creation macro ###################################################
 
@@ -80,7 +78,7 @@
   [name body]
   ~(ev/spawn-thread
     (let [control-chan (ev/thread-chan 10)]
-      (register-loop {:name ,name :data {:channel control-chan}})
+      (register-loop ,name {:channel control-chan})
       (forever
        ,body
        (when (> ( ev/count control-chan) 0)
